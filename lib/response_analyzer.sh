@@ -616,11 +616,17 @@ analyze_response() {
     # 7. Analyze output length trends (detect declining engagement)
     if [[ -f "$RALPH_DIR/.last_output_length" ]]; then
         local last_length=$(cat "$RALPH_DIR/.last_output_length")
-        local length_ratio=$((output_length * 100 / last_length))
+        last_length=${last_length:-0}  # Default to 0 if empty
+        last_length=$((last_length + 0))  # Ensure integer
 
-        if [[ $length_ratio -lt 50 ]]; then
-            # Output is less than 50% of previous - possible completion
-            ((confidence_score+=10))
+        # Check for division by zero (last_length == 0)
+        if [[ $last_length -gt 0 ]]; then
+            local length_ratio=$((output_length * 100 / last_length))
+
+            if [[ $length_ratio -lt 50 ]]; then
+                # Output is less than 50% of previous - possible completion
+                ((confidence_score+=10))
+            fi
         fi
     fi
     echo "$output_length" > "$RALPH_DIR/.last_output_length"

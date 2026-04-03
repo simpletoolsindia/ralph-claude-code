@@ -826,6 +826,82 @@ validate_allowed_tools() {
         return 0  # Empty is valid (uses defaults)
     fi
 
+    # Allowed command patterns for Bash tool restrictions
+    # Safe commands only - no shell execution, no dangerous operations
+    local ALLOWED_BASH_PATTERNS=(
+        "git add" "git commit" "git diff" "git log" "git status"
+        "git push" "git pull" "git fetch" "git checkout" "git branch"
+        "git stash" "git merge" "git tag" "git show" "git remote"
+        "git rebase" "git reset" "git clean" "git rm" "git mv"
+        "npm install" "npm run" "npm test" "npm build" "npm start"
+        "npm ci" "npm audit" "npm pack" "npm publish" "npm outdated"
+        "npm" "npx" "npx *"
+        "bats" "bats *"
+        "python" "python3" "python *" "pip" "pip3"
+        "node" "node *" "npm"
+        "cargo" "cargo *" "cargo build" "cargo test" "cargo run"
+        "pytest" "pytest *" "python -m pytest"
+        "make" "make *"
+        "docker" "docker *" "docker build" "docker run"
+        "go" "go *" "go test" "go build"
+        "curl" "curl *" "wget"
+        "ls" "ls *" "cat" "head" "tail" "grep" "find"
+        "mkdir" "mkdir -p" "rm" "rm -rf" "rm -r" "rm -f"
+        "chmod" "chown" "echo" "printf" "touch"
+        "rsync" "scp" "ssh"
+        "yarn" "yarn *" "pnpm" "pnpm *"
+    )
+
+    # Commands that are NEVER allowed regardless of context
+    local BLOCKED_BASH_PATTERNS=(
+        "bash -c" "sh -c" "zsh -c" "dash -c"
+        ":(){" ":()" "fork" "bomb"
+        "dd if=" "mkfs" "fdisk"
+        "curl -s" "wget -q"  # These can download and execute
+        "eval" "exec"  # Shell execution
+    )
+
+    # Check if a command matches any blocked pattern
+    # Returns 0 if blocked, 1 if allowed
+    is_blocked_command() {
+        local cmd="$1"
+        for blocked in "${BLOCKED_BASH_PATTERNS[@]}"; do
+            if [[ "$cmd" == *"$blocked"* ]]; then
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    # Check if a command matches allowed patterns
+    # Returns 0 if allowed, 1 if not
+    is_allowed_command() {
+        local cmd="$1"
+        # Normalize: remove wildcards for comparison
+        local normalized_cmd="${cmd//\*/}"
+        normalized_cmd="${normalized_cmd%" "}"  # Remove trailing space
+
+        for allowed in "${ALLOWED_BASH_PATTERNS[@]}"; do
+            local norm_allowed="${allowed//\*/}"
+            # Direct match
+            if [[ "$normalized_cmd" == "$norm_allowed" ]]; then
+                return 0
+            fi
+            # Prefix match for npm/npx patterns (e.g., "npm" allows "npm install react")
+            if [[ "$normalized_cmd" == "$norm_allowed "* ]]; then
+                return 0
+            fi
+            # Wildcard match (e.g., "npm *" matches "npm install")
+            if [[ "$allowed" == *"*" ]]; then
+                local prefix="${allowed%% \*}"
+                if [[ "$normalized_cmd" == "$prefix"* ]]; then
+                    return 0
+                fi
+            fi
+        done
+        return 1
+    }
+
     # Split by comma
     local IFS=','
     read -ra tools <<< "$tools_input"
@@ -847,17 +923,48 @@ validate_allowed_tools() {
                 break
             fi
 
-            # Check for Bash(*) pattern - any Bash with parentheses is allowed
-            if [[ "$tool" =~ ^Bash\(.+\)$ ]]; then
-                valid=true
-                break
+            # Check for Bash(*) pattern
+            if [[ "$tool" =~ ^Bash\((.+)\)$ ]]; then
+                local bash_content="${BASH_REMATCH[1]}"
+
+                # Check for blocked commands first
+                if is_blocked_command "$bash_content"; then
+                    echo "Error: Blocked command in Bash pattern: '$tool'"
+                    echo "The following command patterns are not allowed for security reasons."
+                    return 1
+                fi
+
+                # Check if command is in allowed list
+                if is_allowed_command "$bash_content"; then
+                    valid=true
+                    break
+                fi
+
+                # Allow patterns with wildcards in allowed list
+                # Check if any allowed pattern matches
+                for allowed in "${ALLOWED_BASH_PATTERNS[@]}"; do
+                    if [[ "$allowed" == *"*" ]]; then
+                        local prefix="${allowed%% \*}"
+                        if [[ "$bash_content" == "$prefix"* ]]; then
+                            valid=true
+                            break 2
+                        fi
+                    fi
+                done
+
+                if [[ "$valid" != "true" ]]; then
+                    echo "Error: Command not in allowed list: '$bash_content'"
+                    echo "Allowed commands include: git, npm, npx, bats, python, pytest, cargo, make, docker, go"
+                    echo "Use patterns like: Bash(npm *), Bash(git commit *), Bash(pytest *)"
+                    return 1
+                fi
             fi
         done
 
         if [[ "$valid" == "false" ]]; then
             echo "Error: Invalid tool in --allowed-tools: '$tool'"
             echo "Valid tools: ${VALID_TOOL_PATTERNS[*]}"
-            echo "Note: Bash(...) patterns with any content are allowed (e.g., 'Bash(git *)')"
+            echo "Bash patterns must use allowed commands (e.g., 'Bash(npm *)', 'Bash(git *)')"
             return 1
         fi
     done
@@ -1594,6 +1701,11 @@ execute_claude_code() {
         # Check for jq failures (third command) - warn but don't fail
         if [[ ${pipe_status[2]} -ne 0 ]]; then
             log_status "WARN" "jq filter had issues parsing some stream events (exit code ${pipe_status[2]})"
+        fi
+
+        # Check for final tee failures (fourth command) - warn but don't fail
+        if [[ ${#pipe_status[@]} -ge 4 ]] && [[ ${pipe_status[3]} -ne 0 ]]; then
+            log_status "WARN" "Failed to write to live log file (exit code ${pipe_status[3]})"
         fi
 
         echo ""

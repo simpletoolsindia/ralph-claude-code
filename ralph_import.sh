@@ -572,18 +572,63 @@ PROMPTEOF
     fi
 }
 
+# Validate and sanitize file path to prevent path traversal attacks
+# Returns 0 if valid, 1 if path contains malicious patterns
+validate_source_path() {
+    local path="$1"
+
+    # Check for empty path
+    if [[ -z "$path" ]]; then
+        return 1
+    fi
+
+    # Check for path traversal attempts
+    if [[ "$path" == *".."* ]]; then
+        log "ERROR" "Path traversal not allowed: $path"
+        return 1
+    fi
+
+    # Check for command injection characters
+    if [[ "$path" =~ [;|`$()] ]]; then
+        log "ERROR" "Invalid characters in path: $path"
+        return 1
+    fi
+
+    # Check for newlines or control characters
+    if [[ "$path" =~ [[:cntrl:]] ]]; then
+        log "ERROR" "Control characters not allowed in path: $path"
+        return 1
+    fi
+
+    # Check that path resolves within expected directories
+    local resolved
+    resolved=$(realpath -m "$path" 2>/dev/null || echo "$path")
+    if [[ "$resolved" == *"/proc/"* ]] || [[ "$resolved" == *"/sys/"* ]]; then
+        log "ERROR" "Path outside allowed directories: $path"
+        return 1
+    fi
+
+    return 0
+}
+
 # Main function
 main() {
     local source_file="$1"
     local project_name="$2"
-    
+
     # Validate arguments
     if [[ -z "$source_file" ]]; then
         log "ERROR" "Source file is required"
         show_help
         exit 1
     fi
-    
+
+    # Sanitize and validate source path
+    if ! validate_source_path "$source_file"; then
+        log "ERROR" "Invalid source file path"
+        exit 1
+    fi
+
     if [[ ! -f "$source_file" ]]; then
         log "ERROR" "Source file does not exist: $source_file"
         exit 1

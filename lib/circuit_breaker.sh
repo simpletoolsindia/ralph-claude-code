@@ -43,19 +43,28 @@ init_circuit_breaker() {
     fi
 
     if [[ ! -f "$CB_STATE_FILE" ]]; then
-        cat > "$CB_STATE_FILE" << EOF
-{
-    "state": "$CB_STATE_CLOSED",
-    "last_change": "$(get_iso_timestamp)",
-    "consecutive_no_progress": 0,
-    "consecutive_same_error": 0,
-    "consecutive_permission_denials": 0,
-    "last_progress_loop": 0,
-    "total_opens": 0,
-    "reason": "",
-    "current_loop": 0
-}
-EOF
+        # Use jq for safe JSON generation (prevents injection if values contain special chars)
+        jq -n \
+            --arg state "$CB_STATE_CLOSED" \
+            --arg last_change "$(get_iso_timestamp)" \
+            --argjson consecutive_no_progress 0 \
+            --argjson consecutive_same_error 0 \
+            --argjson consecutive_permission_denials 0 \
+            --argjson last_progress_loop 0 \
+            --argjson total_opens 0 \
+            --arg reason "" \
+            --argjson current_loop 0 \
+            '{
+                state: $state,
+                last_change: $last_change,
+                consecutive_no_progress: $consecutive_no_progress,
+                consecutive_same_error: $consecutive_same_error,
+                consecutive_permission_denials: $consecutive_permission_denials,
+                last_progress_loop: $last_progress_loop,
+                total_opens: $total_opens,
+                reason: $reason,
+                current_loop: $current_loop
+            }' > "$CB_STATE_FILE"
     fi
 
     # Ensure history file exists before any transition logging
@@ -82,18 +91,26 @@ EOF
             total_opens=$(jq -r '.total_opens // 0' "$CB_STATE_FILE" 2>/dev/null || echo "0")
             log_circuit_transition "$CB_STATE_OPEN" "$CB_STATE_CLOSED" "Auto-reset on startup (CB_AUTO_RESET=true)" "$current_loop"
 
-            cat > "$CB_STATE_FILE" << EOF
-{
-    "state": "$CB_STATE_CLOSED",
-    "last_change": "$(get_iso_timestamp)",
-    "consecutive_no_progress": 0,
-    "consecutive_same_error": 0,
-    "consecutive_permission_denials": 0,
-    "last_progress_loop": 0,
-    "total_opens": $total_opens,
-    "reason": "Auto-reset on startup"
-}
-EOF
+            # Use jq for safe JSON generation (prevents injection if values contain special chars)
+            jq -n \
+                --arg state "$CB_STATE_CLOSED" \
+                --arg last_change "$(get_iso_timestamp)" \
+                --argjson consecutive_no_progress 0 \
+                --argjson consecutive_same_error 0 \
+                --argjson consecutive_permission_denials 0 \
+                --argjson last_progress_loop 0 \
+                --argjson total_opens "$total_opens" \
+                --arg reason "Auto-reset on startup" \
+                '{
+                    state: $state,
+                    last_change: $last_change,
+                    consecutive_no_progress: $consecutive_no_progress,
+                    consecutive_same_error: $consecutive_same_error,
+                    consecutive_permission_denials: $consecutive_permission_denials,
+                    last_progress_loop: $last_progress_loop,
+                    total_opens: $total_opens,
+                    reason: $reason
+                }' > "$CB_STATE_FILE"
         else
             # Cooldown: check if enough time has elapsed to transition to HALF_OPEN
             local opened_at
